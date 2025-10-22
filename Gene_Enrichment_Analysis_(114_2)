@@ -1,0 +1,436 @@
+---
+title: "_______"
+author: "Ariel Fox"
+date: "2025-05-29"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## R Markdown
+
+```{r question 1 , message=FALSE, warning=FALSE}
+
+PathwayAnalysis <- function(result = result, sigColSelect,  FCcolSelect, go, ORGDB, KEGGOrg, 
+                            ReactOrg, WikiOrg, ONT, PvalCut, read=FALSE){
+  #### set up datasets ####
+  result$comb <- result$Subset_Comparison
+  nam <- names(table(result$Subset_Comparison))
+  volcDT <- result[,colnames(result) %in% c("SYMBOL", colnames(result)[grepl(paste(sigColSelect, FCcolSelect, "comb", sep = "|"), colnames(result))]), with = FALSE]
+  universe = as.character(unique(go$ENTREZID))
+  #### separate data and store individually in a list ####
+  DTList <- lapply(seq_along(nam), function(i){
+    temp <- volcDT[comb == nam[i],][,comb := NULL][]
+    temp <- merge(go, temp, by = "SYMBOL")
+    setnames(temp, colnames(temp), gsub("^_", "", gsub(nam[i], "", colnames(temp))) )  })
+  names(DTList) <- gsub("/", "_", nam)
+  ### GO over representation ####
+  ###############################
+  GOList <- list(); GOnam <- NULL
+  rawGOList <- list(); FinalGoList <- list()
+  rawFinalGoList <- list()
+  for(i in 1:length(DTList)){
+    for(a in 1:length(ONT)){
+      gene <- DTList[[i]][!is.na(ENTREZID),][DTList[[i]][[sigColSelect]] < PvalCut,]$ENTREZID
+      GOover <- enrichGO(gene = as.character(gene), universe = as.character(universe),
+                         OrgDb = ORGDB, ont = ONT[a], pAdjustMethod = "BH", pvalueCutoff = 1,
+                         qvalueCutoff = 1, readable = read)
+      GOList[[a]] <- GOover@result
+      rawGOList[[a]] <- GOover
+      GOnam[a] <- paste("GO", ONT[a], names(DTList)[i], sep = "_")  }
+    names(GOList) <- GOnam
+    names(rawGOList) <- GOnam
+    FinalGoList <- c(FinalGoList, GOList) 
+    rawFinalGoList <- c(rawFinalGoList, rawGOList) }
+  print("Completed GO Pathway Analysis")
+  ### KEGG ####
+  #############
+  KEGGList <- list(); nam <- NULL
+  rawKEGGList <- list()
+  for(i in 1:length(DTList)){
+    gene <- DTList[[i]][!is.na(ENTREZID),][DTList[[i]][[sigColSelect]] < PvalCut,]$ENTREZID
+    KEGGOver <- NULL
+    KEGGOver <- enrichKEGG(gene = as.character(gene), organism = KEGGOrg, pvalueCutoff = 1)
+    if(!is.null(KEGGOver)){
+      KEGGList[[i]] <- KEGGOver@result; rawKEGGList[[i]] <- KEGGOver
+      nam[i] <- paste("KEGG", names(DTList)[i], sep = "_") } }
+  names(KEGGList) <- nam; names(rawKEGGList) <- nam
+  print("Completed KEGG Pathway Analysis")
+  ### Reactome ####
+  #################
+  ReactList <- list(); nam <- NULL
+  rawReactList <- list()
+  for(i in 1:length(DTList)){
+    gene <- DTList[[i]][!is.na(ENTREZID),][DTList[[i]][[sigColSelect]] < PvalCut,]$ENTREZID
+    ReactomeOver <- enrichPathway(gene = as.character(gene), organism = ReactOrg, pvalueCutoff = 1, readable = read)
+    if(!is.null(ReactomeOver)){
+      ReactList[[i]] <- ReactomeOver@result
+      rawReactList[[i]] <- ReactomeOver
+      nam[i] <- paste("Reactome", names(DTList)[i], sep = "_")  } }
+  names(ReactList) <- nam; names(rawReactList) <- nam
+  rawReactList <- rawReactList[!sapply(rawReactList, is.null)]
+  print("Completed Reactome Pathway Analysis")
+  #### WikiPathway ####
+  #####################
+  WikiList <- list(); nam <- NULL
+  rawWikiList <- list()
+  for(i in 1:length(DTList)){
+    gene <- DTList[[i]][!is.na(ENTREZID),][DTList[[i]][[sigColSelect]] < PvalCut,]$ENTREZID
+    WikiOver <- suppressWarnings(enrichWP(gene = as.character(gene), organism = WikiOrg, pvalueCutoff = 1))
+    if(!is.null(WikiOver)){
+      WikiList[[i]] <- WikiOver@result
+      rawWikiList[[i]] <- WikiOver
+      nam[i] <- paste("WikiPathway", names(DTList)[i], sep = "_") } }
+  names(WikiList) <- nam
+  names(rawWikiList) <- nam
+  print("Completed wikiPathway Analysis")
+  if(length(WikiList) == 0){ WikiList <- NULL; rawWikiList <- NULL }
+  totalList <- c(FinalGoList, KEGGList, ReactList, WikiList)
+  totalList <- totalList[!is.na(names(totalList))]
+  totalrawList <- c(rawFinalGoList, rawKEGGList, rawReactList, rawWikiList)
+  totalrawList <- totalrawList[!is.na(names(totalrawList))]
+  return(list(tables=totalList, rawOutput=totalrawList))}
+
+#############################################
+#### Compile genes for selected pathways ####
+#############################################
+PathwayGeneCompile <- function(PlotList2 = PlotList[["PathDT"]], rboundDT = DEseqrbound, addFC = TRUE){
+  GenesReadable <- data.table() 
+    for(i in 1:nrow(PlotList2)){
+      temp <- PlotList2[i,]
+      spl <- str_split(temp$geneID, "/")[[1]]
+      matches <- unique(mgsub(temp$name, c("GO_CC_", "GO_MF_", "GO_BP_", "KEGG_", "Reactome_", "WikiPathway_"), c("","","","","", "")) )
+      FCselect <- rboundDT[Subset_Comparison == matches,][ENTREZID %in% spl,]
+      if(addFC){
+        geneFC <- paste(toupper(FCselect$SYMBOL), paste("(", paste("logFC", round(FCselect$log2FoldChange, 2), sep = ":"), sep = ""), paste(paste(";AdjP", format(FCselect$padj, digits=2), sep = ":"), ")", sep = ""), sep ="")
+        Gene <- paste(geneFC, collapse = "/")
+      } else { Gene <- paste(toupper(FCselect$SYMBOL), collapse = "/")   }
+      #### get Pathway database ####
+      db <- c("GO_CC", "GO_MF", "GO_BP", "KEGG", "Reactome", "WikiPathway")
+      for(a in 1:length(db)){if(nrow(temp[grepl(db[a], temp$name),]) > 0){database <- db[a]}}
+      #### make data table ####
+      temp <- data.table(name=temp$name, Description=temp$Description, p.adjust=temp$p.adjust, 
+                         geneID=Gene, Count=temp$Count, order=temp$order, `log10(Adj.pvalue)`=temp$`log10(Adj.pvalue)`, database=database)
+      GenesReadable <- rbind(GenesReadable, temp) } 
+  return(GenesReadable) }
+
+#############################################################
+#### subset top N pathways identified across all queries ####
+#############################################################
+TopPathwaySubset <- function(GenesReadable = GenesReadableG1, topN = 5, Pcut = 0.05, sigCol = "p.adjust"){
+  TopPaths <- NULL
+  #### Count pathways ####
+  db <- unique(GenesReadable$database)
+  for(i in 1:length(db)){
+    temp <- GenesReadable[database == db[i],]
+    temp <- temp[temp[[sigCol]] < 0.05,]
+    # temp$Description <- gsub(".[0-9]+$", "", temp$Description)
+    paths <- table(temp$Description)
+    paths <- paths[order(paths, decreasing = TRUE)]
+    TopPaths <- c(TopPaths, paths[1:topN]) 
+    }
+  #### Subset top pathways from dataset ####
+  # GenesReadable$Description <- gsub(".[0-9]+$", "", GenesReadable$Description)
+  topDT <- GenesReadable[(GenesReadable$Description %in% names(TopPaths)),]
+  topDT <- topDT[topDT[[sigCol]] < 0.05,]
+  return(topDT) }
+
+###################################################################
+###################################################################
+####  Week 2 Notes Part 1 Over representation pathway analysis #### https://www.youtube.com/watch?v=udyAvvaMjfM
+###################################################################
+###################################################################
+#BiocManager::install("DESeq2")
+library(DESeq2)
+
+##########################################
+#### Code Chunk 1 #### Obtain dataset #### https://www.ncbi.nlm.nih.gov/geo/info/geo2r.html
+##########################################
+homedir <- "C:/Users/ariel/Downloads"
+
+#### GSE202220 ####
+###################
+# load counts table from GEO
+urld <- "https://www.ncbi.nlm.nih.gov/geo/download/?format=file&type=rnaseq_counts"
+path <- paste(urld, "acc=GSE202220", "file=GSE202220_raw_counts_GRCh38.p13_NCBI.tsv.gz", sep="&");
+tbl <- as.matrix(data.table::fread(path, header=T, colClasses="integer"), rownames="GeneID")
+# load gene annotations 
+apath <- paste(urld, "type=rnaseq_counts", "file=Human.GRCh38.p13.annot.tsv.gz", sep="&")
+annot <- data.table::fread(apath, header=T, quote="", stringsAsFactors=F, data.table=F)
+rownames(annot) <- annot$GeneID
+# sample selection
+gsms <- "10101010"
+sml <- strsplit(gsms, split="")[[1]]
+# group membership for samples
+gs <- factor(sml)
+groups <- make.names(c("Tx","Ctrl"))
+levels(gs) <- groups
+sample_info <- data.frame(Group = gs, row.names = colnames(tbl))
+# pre-filter low count genes
+# keep genes with at least N counts > 10, where N = size of smallest group
+keep <- rowSums( tbl >= 10 ) >= min(table(gs))
+tbl <- tbl[keep, ]
+ds <- DESeqDataSetFromMatrix(countData=tbl, colData=sample_info, design= ~Group)
+ds <- DESeq(ds, test="Wald", sfType="poscount")
+tT <- results (ds, contrast=c("Group", groups[1], groups[2]), alpha=0.05, pAdjustMethod ="fdr")
+tT <- merge(as.data.frame(tT), annot, by=0, sort=F)
+tT <- subset(tT, select=c("GeneID","padj","pvalue","lfcSE","stat","log2FoldChange","baseMean","Symbol","Description"))
+write.table(tT, file=file.path(homedir, "GSE202220_DEGs.txt"), row.names=F, sep="\t")
+
+#### GSE213323 ####
+###################
+# load counts table from GEO
+urld <- "https://www.ncbi.nlm.nih.gov/geo/download/?format=file&type=rnaseq_counts"
+path <- paste(urld, "acc=GSE213323", "file=GSE213323_raw_counts_GRCh38.p13_NCBI.tsv.gz", sep="&");
+tbl <- as.matrix(data.table::fread(path, header=T, colClasses="integer"), rownames="GeneID")
+# load gene annotations 
+apath <- paste(urld, "type=rnaseq_counts", "file=Human.GRCh38.p13.annot.tsv.gz", sep="&")
+annot <- data.table::fread(apath, header=T, quote="", stringsAsFactors=F, data.table=F)
+rownames(annot) <- annot$GeneID
+# sample selection
+gsms <- "111000XXXXXXXXXXXXXXXXXXXXXXXXXXXXXX"
+sml <- strsplit(gsms, split="")[[1]]
+# filter out excluded samples (marked as "X")
+sel <- which(sml != "X")
+sml <- sml[sel]
+tbl <- tbl[ ,sel]
+# group membership for samples
+gs <- factor(sml)
+groups <- make.names(c("Tx","Ctrl"))
+levels(gs) <- groups
+sample_info <- data.frame(Group = gs, row.names = colnames(tbl))
+# pre-filter low count genes
+# keep genes with at least N counts > 10, where N = size of smallest group
+keep <- rowSums( tbl >= 10 ) >= min(table(gs))
+tbl <- tbl[keep, ]
+ds <- DESeqDataSetFromMatrix(countData=tbl, colData=sample_info, design= ~Group)
+ds <- DESeq(ds, test="Wald", sfType="poscount")
+tT <- results (ds, contrast=c("Group", groups[1], groups[2]), alpha=0.05, pAdjustMethod ="fdr")
+tT <- merge(as.data.frame(tT), annot, by=0, sort=F)
+tT <- subset(tT, select=c("GeneID","padj","pvalue","lfcSE","stat","log2FoldChange","baseMean","Symbol","Description"))
+write.table(tT, file=file.path(homedir, "GSE213323_DEGs.txt"), row.names=F, sep="\t")
+
+###################################
+#### Combine datasets together ####
+###################################
+#install.packages(c("data.table", "dplyr"))
+library(data.table); library(dplyr)
+GSE202220 <- fread(file.path(homedir, "GSE202220_DEGs.txt"))[, `:=`(Subset_Comparison = "GSE202220")][] %>% setnames(c("GeneID", "Symbol"), c("ENTREZID", "SYMBOL"))
+GSE213323 <- fread(file.path(homedir, "GSE213323_DEGs.txt"))[, `:=`(Subset_Comparison = "GSE213323")][] %>% setnames(c("GeneID", "Symbol"), c("ENTREZID", "SYMBOL"))
+DEseqrbound <- rbind(GSE202220, GSE213323)
+fwrite(DEseqrbound, file.path(homedir, "GSE202220_GSE213323DEGAnalysis.xls"), row.names = FALSE, quote = FALSE, sep = "\t")
+
+#########################################
+#### Code Chunk 1 #### Plot the data ####
+#########################################
+#BiocManager::install('EnhancedVolcano')
+#install.packages(c("ggpubr", "gridExtra"))
+library(EnhancedVolcano); library(ggpubr); library(gridExtra)
+VOL1 <- EnhancedVolcano(DEseqrbound[Subset_Comparison == "GSE202220",],
+                lab = DEseqrbound[Subset_Comparison == "GSE202220",]$SYMBOL,
+                x = 'log2FoldChange', y = 'pvalue', title = "GSE202220",
+                pCutoff = 10e-16, FCcutoff = 1.5, pointSize = 3.0, labSize = 6.0,
+                col=c('black', 'black', 'black', 'red3'), colAlpha = 1)
+VOL2 <- EnhancedVolcano(DEseqrbound[Subset_Comparison == "GSE213323",],
+                lab = DEseqrbound[Subset_Comparison == "GSE213323",]$SYMBOL,
+                x = 'log2FoldChange', y = 'pvalue', title = "GSE213323",
+                pCutoff = 10e-16, FCcutoff = 1.5, pointSize = 3.0, labSize = 6.0,
+                col=c('black', 'black', 'black', 'red3'), colAlpha = 1)
+MA1 <- ggmaplot(DEseqrbound[Subset_Comparison == "GSE202220",], main = "GSE202220", fdr = 0.05, fc = 2, size = 0.4,
+         palette = c("#B31B21", "#1465AC", "darkgray"),
+         genenames = as.vector(DEseqrbound[Subset_Comparison == "GSE202220",]$SYMBOL), 
+         legend = "top", top = 20, font.label = c("bold", 11),
+         font.legend = "bold", font.main = "bold", ggtheme = ggplot2::theme_minimal())
+MA2 <- ggmaplot(DEseqrbound[Subset_Comparison == "GSE213323",], main = "test", fdr = 0.05, fc = 2, size = 0.4,
+         palette = c("#B31B21", "#1465AC", "darkgray"),
+         genenames = as.vector(DEseqrbound[Subset_Comparison == "GSE213323",]$SYMBOL), 
+         legend = "top", top = 20, font.label = c("bold", 11),
+         font.legend = "bold", font.main = "bold", ggtheme = ggplot2::theme_minimal())
+grid.arrange(VOL1, VOL2, MA1, MA2, nrow = 2)
+
+#######################
+#### Map EntrezIDs ####
+#######################
+#BiocManager::install("org.Hs.eg.db")
+library(org.Hs.eg.db)
+x <- org.Hs.egSYMBOL
+mapped_genes <- mappedkeys(x)
+xx <- unlist(as.list(x[mapped_genes]))
+go <- data.table(SYMBOL=xx, ENTREZID=names(xx))
+go <- go[!duplicated(go$SYMBOL),]
+
+############################################
+#### Code Chunk 2 #### Pathway analysis #### https://yulab-smu.top/biomedical-knowledge-mining-book/enrichment-overview.html
+############################################
+# BiocManager::install(c("clusterProfiler", "ReactomePA"))
+library(clusterProfiler); library(ReactomePA)
+#### check for duplicated genes ####
+c(sum(duplicated(DEseqrbound[Subset_Comparison == "GSE202220",]$SYMBOL)), sum(duplicated(go$SYMBOL)))
+c(sum(duplicated(DEseqrbound[Subset_Comparison == "GSE213323",]$SYMBOL)), sum(duplicated(go$SYMBOL)))
+c(sum(duplicated(DEseqrbound[Subset_Comparison == "GSE202220",]$ENTREZID)), sum(duplicated(go$ENTREZID)))
+c(sum(duplicated(DEseqrbound[Subset_Comparison == "GSE213323",]$ENTREZID)), sum(duplicated(go$ENTREZID)))
+go <- go[go$ENTREZID %in% DEseqrbound$ENTREZID,]
+pathAnalysis <- DEseqrbound[abs(log2FoldChange) > 1.5,] 
+PathRes <- PathwayAnalysis(result = pathAnalysis,
+                           sigColSelect = "padj",
+                           FCcolSelect = "log2FoldChange",
+                           go = go,
+                           ORGDB = "org.Hs.eg.db",
+                           KEGGOrg = "hsa", 
+                           ReactOrg = "human", 
+                           WikiOrg = "Homo sapiens",
+                           ONT = c("CC", "MF", "BP"),
+                           PvalCut = 0.05, 
+                           read=FALSE)
+saveRDS(PathRes, file = file.path(homedir, "PathwayAnalysis.rds") ) 
+PathRes <- readRDS( file.path(homedir, "PathwayAnalysis.rds") )
+names(PathRes)
+names(PathRes[["tables"]])
+
+###############################################################################
+#### Code Chunk 3 #### Plot pathway enrichments for individual comparisons ####
+###############################################################################
+files <- names(PathRes[["rawOutput"]])
+PlotList <- list()
+for(i in 1:length(files)){
+  PlotList[[i]] <- dotplot(PathRes[["rawOutput"]][[files[i]]], showCategory = 10, x="GeneRatio") + ggtitle(files[i]) 
+  }
+names(PlotList) <- files
+PlotList <- PlotList[order(names(PlotList))]
+do.call("grid.arrange", c(PlotList, ncol=2))
+
+#####################################################
+#### Code Chunk 4 #### return genes for pathways ####
+#####################################################
+#install.packages(c("stringr", "textclean"))
+library(stringr); library(textclean)
+#### combine all pathway analyses into one table ####
+#install.packages(c("stringr", "textclean"))
+library(stringr); library(textclean)
+#### combine all pathway analyses into one table ####
+dtap <- lapply(PathRes[["tables"]], as.data.table)
+AllPathsBound <- rbindlist(dtap, idcol = "name",fill = TRUE)
+allAnnotated <- PathwayGeneCompile(PlotList2 = AllPathsBound, rboundDT = DEseqrbound, addFC = TRUE)
+fwrite(allAnnotated, file.path(homedir, "pathwayResultsAllWithDEGs.xls"), row.names = FALSE, quote = FALSE, sep = "\t")
+#### subset top pathways ####
+topallAnnotated <- TopPathwaySubset(GenesReadable = allAnnotated, topN = 5, Pcut = 0.05, sigCol = "p.adjust")
+fwrite(topallAnnotated, file.path(homedir, "pathwayResultsSigWithDEGs.xls"), row.names = FALSE, quote = FALSE, sep = "\t")
+#install.packages("DT")
+library(DT)
+datatable(head(as.data.frame(topallAnnotated),10), filter = 'top', options = list(pageLength = 10, scrollX = TRUE, scrollY = "400px", autoWidth = TRUE))
+
+
+####################################################################
+#### Code Chunk 4 #### Pathway enrichment for selected pathways ####
+####################################################################
+selectedPaths <- c("Chemokine receptors bind chemokines")
+selectAnnotate <- allAnnotated[allAnnotated$Description %in% selectedPaths,]
+fwrite(selectAnnotate, file.path(homedir, "pathwayResultsSelectedWithDEGs.xls"), row.names = FALSE, quote = FALSE, sep = "\t")
+##Got rid of "results" in the line above between homedir and "file pathway
+####################################################
+#### Code Chunk 6 #### selected Pathway Heatmap #### Homework: turn this section of code into a function 
+####################################################
+#install.packages("ComplexHeatmap")
+library(ComplexHeatmap)
+
+Selected_Pathway_Heatmap <- function(selectAnnotate,DEseqrbound, Legend_value = "log2FoldChange",pathway_title = "Label What Target Pathway") {
+  # Step 1: Extract gene symbols from geneID column
+  spl <- str_split(c(selectAnnotate$geneID), "/")
+  selected <- unique(unlist(lapply(spl, function(x) {
+    gsub("\\(logFC.+[0-9]\\)", "", x)
+  })))
+  
+  # Step 2: Filter the DEseqrbound table for selected genes
+  selectedDT <- DEseqrbound[SYMBOL %in% selected, ]
+  
+  # Step 3: Reshape to wide format with SYMBOL ~ Subset_Comparison
+  mat <- as.data.frame(dcast(selectedDT, SYMBOL ~ Subset_Comparison, value.var = Legend_value))
+  Rnames <- mat$SYMBOL
+  mat <- apply(mat[, 2:ncol(mat)], 2, as.numeric)
+  rownames(mat) <- Rnames
+  
+  # Step 4: Plot heatmap
+  Heatmap(mat, na_col = "grey", cluster_rows = FALSE, cluster_columns = FALSE, name = paste0("log2(Fold change)"), column_title = pathway_title)
+}
+Selected_Pathway_Heatmap(selectAnnotate, DEseqrbound, Legend_value = "log2FoldChange", pathway_title = "Chemokine Receptors Bind Chemokines")
+
+######################################################## # https://www.youtube.com/watch?v=EF94wPaqXM0
+#### Code Chunk 1 #### Gene Set Enrichment analysis #### # https://reactome.org/download-data
+########################################################
+#BiocManager::install(c("fgsea", "qusage"))
+library(fgsea); library(qusage)
+
+run_gsea_plots <- function(DEseqrbound, 
+                           gmt_file, 
+                           lfc_cutoff = 1.5, 
+                           padj_cutoff = 0.05, 
+                           min_size = 15, 
+                           max_size = 500, 
+                           gsea_param = 0.5) {
+  
+  # Load pathways
+  reactPaths <- read.gmt(gmt_file)
+  
+  # Get all unique comparisons
+  Comps <- unique(DEseqrbound$Subset_Comparison)
+  
+  # Initialize list to store GSEA plots
+  GSEAGraph <- list()
+  
+  # Loop through each comparison
+  for (i in seq_along(Comps)) {
+    # Subset based on cutoff
+    GeneTargSelect <- DEseqrbound[
+      Subset_Comparison == Comps[i] &
+        abs(log2FoldChange) > lfc_cutoff &
+        padj < padj_cutoff, 
+    ]
+    
+    # Order by descending fold change
+    GeneTargSelect <- GeneTargSelect[order(log2FoldChange, decreasing = TRUE), ]
+    
+    # Create ranked vector
+    Ranks <- GeneTargSelect$log2FoldChange
+    names(Ranks) <- toupper(GeneTargSelect$SYMBOL)
+    
+    # Run fgsea
+    fgseaRes <- fgsea(
+      pathways = reactPaths,
+      stats = Ranks,
+      minSize = min_size,
+      maxSize = max_size
+    )
+    
+    # Select top pathways
+    topPathwaysUp <- fgseaRes[ES > 0][head(order(pval), n = 10), pathway]
+    topPathwaysDown <- fgseaRes[ES < 0][head(order(pval), n = 10), pathway]
+    topPathways <- c(topPathwaysUp, rev(topPathwaysDown))
+    
+    # Generate GSEA plot
+    GSEAGraph[[i]] <- plotGseaTable(
+      reactPaths[topPathways], 
+      Ranks, 
+      fgseaRes, 
+      gseaParam = gsea_param
+    )
+  }
+  
+  # Name list by comparisons
+  names(GSEAGraph) <- Comps
+  
+  # Return the list of plots
+  return(GSEAGraph)
+}
+
+
+gsea_plots <- run_gsea_plots(
+  DEseqrbound = DEseqrbound,
+  gmt_file = file.path(homedir, "ReactomePathways.gmt")
+)
+
+# View one plot (e.g., the first comparison)
+gsea_plots
+```
+
